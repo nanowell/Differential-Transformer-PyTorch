@@ -68,6 +68,7 @@ class MultiHeadDifferentialAttention(nn.Module):
     """
     Multi-Head Differential Attention Mechanism.
     Replaces the conventional softmax attention with a differential attention.
+    Incorporates a causal mask to ensure autoregressive behavior.
     """
     def __init__(self, d_model, num_heads, lambda_init):
         """
@@ -90,10 +91,10 @@ class MultiHeadDifferentialAttention(nn.Module):
         self.W_o = nn.Linear(2 * self.d_head * num_heads, d_model, bias=False)
         
         # Learnable parameters for lambda reparameterization
-        self.lambda_q1 = nn.Parameter(torch.randn(self.d_head))
-        self.lambda_k1 = nn.Parameter(torch.randn(self.d_head))
-        self.lambda_q2 = nn.Parameter(torch.randn(self.d_head))
-        self.lambda_k2 = nn.Parameter(torch.randn(self.d_head))
+        self.lambda_q1 = nn.Parameter(torch.randn(num_heads, self.d_head))
+        self.lambda_k1 = nn.Parameter(torch.randn(num_heads, self.d_head))
+        self.lambda_q2 = nn.Parameter(torch.randn(num_heads, self.d_head))
+        self.lambda_k2 = nn.Parameter(torch.randn(num_heads, self.d_head))
         
         self.lambda_init = lambda_init
         
@@ -145,18 +146,30 @@ class MultiHeadDifferentialAttention(nn.Module):
         # lambda_val = exp(lambda_q1 . lambda_k1) - exp(lambda_q2 . lambda_k2) + lambda_init
         # Compute dot products for each head
         # Shape of lambda_val: (num_heads,)
-        lambda_q1_dot_k1 = torch.einsum('hd,hd->h', self.lambda_q1, self.lambda_k1)  # (num_heads,)
-        lambda_q2_dot_k2 = torch.einsum('hd,hd->h', self.lambda_q2, self.lambda_k2)  # (num_heads,)
+        lambda_q1_dot_k1 = torch.einsum('hhd,hhk->hk', self.lambda_q1, self.lambda_k1).sum(dim=-1)  # (num_heads,)
+        lambda_q2_dot_k2 = torch.einsum('hhd,hhk->hk', self.lambda_q2, self.lambda_k2).sum(dim=-1)  # (num_heads,)
         lambda_val = torch.exp(lambda_q1_dot_k1) - torch.exp(lambda_q2_dot_k2) + self.lambda_init  # (num_heads,)
         
         # Expand lambda_val to match attention dimensions
         # Shape: (batch, num_heads, 1, 1)
         lambda_val = lambda_val.unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
         
+        # ------------------- Causal Mask Implementation ------------------- #
+        # Create a causal mask to prevent attention to future tokens
+        # Shape of mask: (1, 1, N, N)
+        mask = torch.tril(torch.ones((N, N), device=X.device)).unsqueeze(0).unsqueeze(0)  # (1, 1, N, N)
+        # Replace 1s with 0.0 and 0s with -inf
+        mask = mask.masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, 0.0)
+        # -------------------------------------------------------------------- #
+        
         # Compute attention scores
         scaling = 1 / math.sqrt(self.d_head)
         A1 = torch.matmul(Q1, K1.transpose(-2, -1)) * scaling  # (batch, num_heads, N, N)
         A2 = torch.matmul(Q2, K2.transpose(-2, -1)) * scaling  # (batch, num_heads, N, N)
+        
+        # Apply the causal mask
+        A1 = A1 + mask  # Mask out future positions
+        A2 = A2 + mask  # Mask out future positions
         
         # Apply softmax to get attention weights
         attention1 = F.softmax(A1, dim=-1)  # (batch, num_heads, N, N)
