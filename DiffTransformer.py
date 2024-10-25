@@ -146,8 +146,8 @@ class MultiHeadDifferentialAttention(nn.Module):
         # lambda_val = exp(lambda_q1 . lambda_k1) - exp(lambda_q2 . lambda_k2) + lambda_init
         # Compute dot products for each head
         # Shape of lambda_val: (num_heads,)
-        lambda_q1_dot_k1 = torch.einsum('hhd,hhk->hk', self.lambda_q1, self.lambda_k1).sum(dim=-1)  # (num_heads,)
-        lambda_q2_dot_k2 = torch.einsum('hhd,hhk->hk', self.lambda_q2, self.lambda_k2).sum(dim=-1)  # (num_heads,)
+        lambda_q1_dot_k1 = torch.sum(self.lambda_q1 * self.lambda_k1, dim=-1).float()  # (num_heads,)
+        lambda_q2_dot_k2 = torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1).float()  # (num_heads,)
         lambda_val = torch.exp(lambda_q1_dot_k1) - torch.exp(lambda_q2_dot_k2) + self.lambda_init  # (num_heads,)
         
         # Expand lambda_val to match attention dimensions
